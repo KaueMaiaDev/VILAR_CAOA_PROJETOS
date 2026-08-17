@@ -2,18 +2,19 @@
 
 Gestão inteligente de projetos e entregas: demandas, projetos, atividades (Kanban), responsáveis, calendário e relatórios.
 
-Stack: React 19 + Vite no frontend, Express no backend, SQLite (via `better-sqlite3`) como banco de dados persistente.
+Stack: React 19 + Vite no frontend, Express (como função serverless) no backend, PostgreSQL via [Supabase](https://supabase.com) como banco de dados, deploy na [Vercel](https://vercel.com).
 
 ## Rodando localmente
 
-**Pré-requisitos:** Node.js 20+
+**Pré-requisitos:** Node.js 20+ e um projeto Supabase (gratuito) já criado.
 
 1. Instale as dependências:
    ```
    npm install
    ```
-2. (Opcional) Copie `.env.example` para `.env` e ajuste as variáveis se quiser mudar a porta, o diretório de dados ou habilitar o endpoint de reset do banco.
-3. Rode em modo desenvolvimento:
+2. Rode o schema `supabase/schema.sql` no seu projeto Supabase (Dashboard → SQL Editor → cole o conteúdo do arquivo → Run). Isso cria as tabelas, índices e o responsável padrão.
+3. Copie `.env.example` para `.env` e preencha `DATABASE_URL` com a connection string do **Transaction pooler** do Supabase (Project Settings → Database → Connection string, porta `6543`).
+4. Rode em modo desenvolvimento:
    ```
    npm run dev
    ```
@@ -27,25 +28,23 @@ NODE_ENV=production npm start
 
 ## Banco de dados
 
-Os dados ficam em um arquivo SQLite (`data/database.sqlite` por padrão, configurável via `DATA_DIR`). O schema é criado automaticamente na primeira execução, com índices nas chaves estrangeiras e `ON DELETE CASCADE` entre projetos → atividades → comentários/anexos/histórico.
+Os dados ficam em um projeto Postgres gerenciado pelo Supabase. O schema (`supabase/schema.sql`) cria as tabelas `responsables`, `projetos`, `demandas`, `atividades`, `comentarios`, `anexos` e `historico`, com índices nas chaves estrangeiras/status e `ON DELETE CASCADE` entre projetos → atividades → comentários/anexos/histórico.
 
-## Deploy no Render
+O servidor Express se conecta diretamente ao Postgres via `pg`, usando a role `postgres` (bypassa Row Level Security). RLS está habilitado em todas as tabelas sem policies — se a API REST automática do Supabase (PostgREST, chave anon) for usada no futuro, ela fica bloqueada por padrão, já que o browser nunca acessa o Supabase diretamente nesta aplicação.
 
-O repositório já inclui `Dockerfile` e `render.yaml` prontos:
+## Deploy na Vercel
 
-1. Crie um novo **Blueprint** no [Render](https://dashboard.render.com/blueprints) apontando para este repositório — o `render.yaml` configura o serviço automaticamente (build via Docker, health check em `/healthz`, disco persistente montado em `/data`).
-2. O disco persistente exige um plano pago (`starter` ou superior). **No plano free do Render o disco não é anexado e os dados são perdidos a cada reinício/redeploy** — use o free apenas para testes rápidos.
-3. A variável `ADMIN_RESET_TOKEN` é gerada automaticamente pelo blueprint. Guarde o valor se quiser usar o endpoint de manutenção `POST /api/reset-db` (requer o header `x-admin-token`); sem essa variável configurada, o endpoint fica desabilitado.
-4. Após o primeiro deploy, o Render expõe uma URL pública (`https://<nome-do-serviço>.onrender.com`).
+1. Crie um projeto no [Supabase](https://supabase.com/dashboard) e rode `supabase/schema.sql` (veja acima).
+2. Importe este repositório na [Vercel](https://vercel.com/new). O `vercel.json` já configura o build (`vite build`, saída em `dist/`) e as rotas: `/api/*` vai para a função serverless em `api/index.ts`, e o restante cai no SPA (`index.html`).
+3. Em **Project Settings → Environment Variables**, adicione:
+   - `DATABASE_URL`: connection string do **Transaction pooler** do Supabase (porta `6543`) — necessária porque cada invocação da função serverless abre sua própria conexão, e o pgbouncer do Supabase foi feito para absorver esse padrão.
+   - `ADMIN_RESET_TOKEN` (opcional): habilita `POST /api/reset-db` (apaga todos os dados e recria o responsável padrão) quando enviado no header `x-admin-token`. Deixe vazio para desabilitar o endpoint.
+4. Deploy. A Vercel expõe uma URL pública (`https://<seu-projeto>.vercel.app`).
 
-### Deploy manual (sem Blueprint)
+### Observação sobre rate limiting
 
-Se preferir criar o serviço manualmente na dashboard do Render:
-- **Runtime:** Docker (usa o `Dockerfile` da raiz do projeto)
-- **Health Check Path:** `/healthz`
-- **Disk:** monte um disco em `/data` (necessário para persistir o SQLite)
-- **Env vars:** `NODE_ENV=production`, `DATA_DIR=/data`, e opcionalmente `ADMIN_RESET_TOKEN`
+O limite de requisições (`express-rate-limit`) usa armazenamento em memória por instância da função serverless — funciona bem para uso normal, mas não é um limite global exato sob alta concorrência com múltiplas instâncias frias. Para uma garantia mais forte, troque por um store compartilhado (ex.: Upstash Redis).
 
 ## Variáveis de ambiente
 
-Veja `.env.example` para a lista completa (`PORT`, `DATA_DIR`, `ADMIN_RESET_TOKEN`).
+Veja `.env.example` para a lista completa (`PORT`, `DATABASE_URL`, `ADMIN_RESET_TOKEN`).
